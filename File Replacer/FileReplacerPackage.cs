@@ -113,28 +113,16 @@ namespace File_Replacer
                 string extension = groups[3];
 
                 // Check if we should exclude the file
-                if (!filesToExclude.Any(f => f.ToLowerInvariant() == name + "." + extension))
+                if (!filesToExclude.Any(f => f.Equals(name + "." + extension, StringComparison.InvariantCultureIgnoreCase)))
                 {
                     // Only copy the file if it matches the current active configuration (the match is case insensitive)
-                    if (configName == activeConfiguration)
+                    if (configName.Equals(activeConfiguration, StringComparison.InvariantCultureIgnoreCase))
                     {
                         string sourceFile = document.FullName;
                         string destFile = Path.Combine(Path.GetDirectoryName(document.FullName), name + "." + extension);
 
-                        // Get modified document text
-                        var textDocument = (TextDocument)document.Object("TextDocument");
-                        EditPoint editPoint = textDocument.StartPoint.CreateEditPoint();
-                        var content = editPoint.GetText(textDocument.EndPoint);
-
-                        // Save the content to the destination file, we do it in this way so the IDE doesn't detect
-                        //  the file was modified externally (as it would do if we just copied the file using File.Copy)
-                        var docData = new DocData(this, destFile);
-                        var editorAdaptersFactoryService = (this.GetService(typeof(SComponentModel)) as IComponentModel).GetService<IVsEditorAdaptersFactoryService>();
-                        var textBuffer = editorAdaptersFactoryService.GetDataBuffer(docData.Buffer);
-                        textBuffer.Replace(new Span(0, textBuffer.CurrentSnapshot.Length), content);
-
-                        // Save the file after modifying it
-                        document.ProjectItem.DTE.Solution.FindProjectItem(destFile).Save();
+                        // Replace the file
+                        ReplaceFile(sourceFile, destFile, document.ProjectItem.ContainingProject);
                     }
                 }
             }
@@ -171,35 +159,11 @@ namespace File_Replacer
                         // Only copy the file if it matches the current active configuration (the match is case insensitive)
                         if (configName.Equals(activeConfiguration, StringComparison.InvariantCultureIgnoreCase))
                         {
-                            bool documentOpened = false;
                             string sourceFile = file;
                             string destFile = Path.Combine(Path.GetDirectoryName(file), name + "." + extension);
 
-                            OutputString(VSConstants.OutputWindowPaneGuid.BuildOutputPane_guid,
-                                "Replacing " + destFile + " with " + sourceFile + Environment.NewLine);
-
-                            // Get source text. Make sure the project item is opened, otherwise the Document property
-                            //  will be null
-                            var projectItem = project.DTE.Solution.FindProjectItem(sourceFile);
-                            if (!projectItem.IsOpen)
-                            {
-                                projectItem.Open();
-                                documentOpened = true;
-                            }
-
-                            var textDocument = (TextDocument)projectItem.Document.Object("TextDocument");
-                            EditPoint editPoint = textDocument.StartPoint.CreateEditPoint();
-                            var content = editPoint.GetText(textDocument.EndPoint);
-
-                            // Copy the text to the destination file
-                            var docData = new DocData(this, destFile);
-                            var editorAdaptersFactoryService = (this.GetService(typeof(SComponentModel)) as IComponentModel).GetService<IVsEditorAdaptersFactoryService>();
-                            var textBuffer = editorAdaptersFactoryService.GetDataBuffer(docData.Buffer);
-                            textBuffer.Replace(new Span(0, textBuffer.CurrentSnapshot.Length), content);
-
-                            // Save the file after modifying it
-                            project.DTE.Solution.FindProjectItem(destFile).Save();
-                            if(documentOpened) projectItem.Document.Close();
+                            // Replace the file
+                            ReplaceFile(sourceFile, destFile, project);
                             ++fileCount;
                         }
                     }
@@ -209,6 +173,61 @@ namespace File_Replacer
             OutputString(VSConstants.OutputWindowPaneGuid.BuildOutputPane_guid, fileCount + " file(s) replaced" + Environment.NewLine);
         }
 
+        /// <summary>
+        /// Replaces the source file with the destination file
+        /// </summary>
+        /// <param name="source">full path to the source file</param>
+        /// <param name="dest">full path to the destination file</param>
+        /// <param name="project">project where the file is located</param>
+        private void ReplaceFile(string source, string dest, Project project)
+        {
+            bool documentOpened = false;
+
+            OutputString(VSConstants.OutputWindowPaneGuid.BuildOutputPane_guid,
+                "Replacing " + dest + " with " + source + Environment.NewLine);
+
+            // Get source text. Make sure the project item is opened, otherwise the Document property
+            //  will be null
+            var projectItem = project.DTE.Solution.FindProjectItem(source);
+            if (!projectItem.IsOpen)
+            {
+                projectItem.Open();
+                documentOpened = true;
+            }
+
+            // Try to open the document as Text
+            var textDocument = (TextDocument)projectItem.Document.Object("TextDocument");
+
+            // Not a text document
+            if (textDocument == null)
+            {
+                // If we can replace it as text, just copy the file manually
+                File.Copy(source, dest, true);
+            }
+            // Replace the text document
+            else
+            {
+                EditPoint editPoint = textDocument.StartPoint.CreateEditPoint();
+                var content = editPoint.GetText(textDocument.EndPoint);
+
+                // Copy the text to the destination file
+                var docData = new DocData(this, dest);
+                var editorAdaptersFactoryService = (this.GetService(typeof(SComponentModel)) as IComponentModel).GetService<IVsEditorAdaptersFactoryService>();
+                var textBuffer = editorAdaptersFactoryService.GetDataBuffer(docData.Buffer);
+                textBuffer.Replace(new Span(0, textBuffer.CurrentSnapshot.Length), content);
+
+                // Save the file after modifying it
+                project.DTE.Solution.FindProjectItem(dest).Save();
+            }
+            
+            // Close the document if we opened it
+            if (documentOpened) projectItem.Document.Close();
+        }
+
+        /// <summary>
+        /// Get the active project
+        /// </summary>
+        /// <returns>Active project</returns>
         private Project GetActiveProject()
         {
             DTE dte = Package.GetGlobalService(typeof(SDTE)) as DTE;
@@ -228,6 +247,11 @@ namespace File_Replacer
             return activeProject;
         }
 
+        /// <summary>
+        /// Output string to the specified pane
+        /// </summary>
+        /// <param name="guidPane">GUID of the pane to use</param>
+        /// <param name="text">Text to output</param>
         private void OutputString(Guid guidPane, string text)
         {
             const int VISIBLE = 1;
@@ -241,15 +265,15 @@ namespace File_Replacer
             outputWindow = base.GetService(typeof(SVsOutputWindow)) as IVsOutputWindow;
 
             // The General pane is not created by default. We must force its creation
-            if (guidPane == Microsoft.VisualStudio.VSConstants.OutputWindowPaneGuid.GeneralPane_guid)
+            if (guidPane == VSConstants.OutputWindowPaneGuid.GeneralPane_guid)
             {
                 hr = outputWindow.CreatePane(guidPane, "General", VISIBLE, DO_NOT_CLEAR_WITH_SOLUTION);
-                Microsoft.VisualStudio.ErrorHandler.ThrowOnFailure(hr);
+                ErrorHandler.ThrowOnFailure(hr);
             }
 
             // Get the pane
             hr = outputWindow.GetPane(guidPane, out outputWindowPane);
-            Microsoft.VisualStudio.ErrorHandler.ThrowOnFailure(hr);
+            ErrorHandler.ThrowOnFailure(hr);
 
             // Output the text
             if (outputWindowPane != null)
