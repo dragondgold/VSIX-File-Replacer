@@ -101,13 +101,17 @@ namespace File_Replacer
             buildEvents.Value.OnBuildBegin += BuildEvents_OnBuildBegin;
         }
 
+        /// <summary>
+        /// This event will run when any file is saved
+        /// </summary>
+        /// <param name="document">Saved document</param>
         private void DocumentEvents_DocumentSaved(EnvDTE.Document document)
         {
             // If this is a file we should use for replacement, let's use it
             if (regex.Match(document.Name).Success)
             {
                 var groups = regex.Split(document.Name);
-                string activeConfiguration = document.ProjectItem.ContainingProject.ConfigurationManager.ActiveConfiguration.ConfigurationName.ToLowerInvariant();
+                string activeConfiguration = document.ProjectItem.ContainingProject.ConfigurationManager.ActiveConfiguration.ConfigurationName;
                 string name = groups[1];
                 string configName = groups[2];
                 string extension = groups[3];
@@ -128,8 +132,22 @@ namespace File_Replacer
             }
         }
 
+        /// <summary>
+        /// This event will run before starting the Build process
+        /// </summary>
+        /// <param name="Scope"></param>
+        /// <param name="Action"></param>
         private void BuildEvents_OnBuildBegin(vsBuildScope Scope, vsBuildAction Action)
         {
+            // GetActiveProject() will fail if not building from a project, we will handle this later, by now, just emit a warning
+            if (Scope != vsBuildScope.vsBuildScopeProject)
+            {
+                // Write to the build output pane
+                OutputString(VSConstants.OutputWindowPaneGuid.BuildOutputPane_guid, "Can't replace files when building from solution. Build project instead."
+                    + Environment.NewLine);
+                return;
+            }
+
             // Write to the build output pane
             OutputString(VSConstants.OutputWindowPaneGuid.BuildOutputPane_guid, "Replacing files..." + Environment.NewLine);
 
@@ -137,18 +155,21 @@ namespace File_Replacer
             Project project = GetActiveProject();
 
             string projectDir = Path.GetDirectoryName(project.FullName);
+            string activeConfiguration = project.ConfigurationManager.ActiveConfiguration.ConfigurationName;
             string[] files = Directory.GetFiles(projectDir, "*", SearchOption.AllDirectories);
             int fileCount = 0;
 
+            OutputString(VSConstants.OutputWindowPaneGuid.BuildOutputPane_guid, "Active configuration is: " + activeConfiguration + Environment.NewLine);
+            OutputString(VSConstants.OutputWindowPaneGuid.BuildOutputPane_guid, files.Length + " files found in project " + project.Name + Environment.NewLine);
+
             // Scan every file in the project folder before building
-            foreach(string file in files)
+            foreach (string file in files)
             {
                 // If the file is a candidate for replacement let's check it
                 string fileName = Path.GetFileName(file);
                 if (regex.Match(fileName).Success)
                 {
                     var groups = regex.Split(fileName);
-                    string activeConfiguration = project.ConfigurationManager.ActiveConfiguration.ConfigurationName.ToLowerInvariant();
                     string name = groups[1];
                     string configName = groups[2];
                     string extension = groups[3];
@@ -166,6 +187,9 @@ namespace File_Replacer
                             ReplaceFile(sourceFile, destFile, project);
                             ++fileCount;
                         }
+                    } else
+                    {
+                        OutputString(VSConstants.OutputWindowPaneGuid.BuildOutputPane_guid, "File " + file + " was excluded" + Environment.NewLine);
                     }
                 }
             }
@@ -230,11 +254,11 @@ namespace File_Replacer
         /// <returns>Active project</returns>
         private Project GetActiveProject()
         {
-            DTE dte = Package.GetGlobalService(typeof(SDTE)) as DTE;
+            DTE2 dte = Package.GetGlobalService(typeof(SDTE)) as DTE2;
             return GetActiveProject(dte);
         }
 
-        private Project GetActiveProject(DTE dte)
+        private Project GetActiveProject(DTE2 dte)
         {
             Project activeProject = null;
 
