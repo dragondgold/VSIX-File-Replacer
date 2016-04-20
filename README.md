@@ -1,6 +1,6 @@
 ## File Replacer Extension for Visual Studio Builds
 
-This is an small Python 3 script created to be used as a pre-build event in order to be able to have different files for different build configurations.
+This is an small Visual Studio Extension created to be used as a pre-build event in order to be able to have different files for different build configurations.
 
 ## Usage
 
